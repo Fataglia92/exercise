@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Production Environment for Java Microservice
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Description: Name of the environment (e.g., production)
+
+Resources:
+  # VPC, Internet Gateway, Subnet, Route Table, Security Group, WAF, MySQLDB, REST API, etc. (similar to previous scripts)
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${EnvironmentName}-ALB"
+      Subnets:
+        - !Ref Subnet
+      SecurityGroups:
+        - !GetAtt SecurityGroup.GroupId
+      Scheme: internet-facing
+      LoadBalancerAttributes:
+        - Key: idle_timeout.timeout_seconds
+          Value: '60'
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${EnvironmentName}-TargetGroup"
+      Port: 80
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: 200
+            ContentType: text/plain
+            Content: "OK"
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+        - Type: fixed-response
+          FixedResponseConfig:
+            StatusCode: 200
+            ContentType: text/plain
+            Content: "OK"
+      Conditions:
+        - Field: path-pattern
+          Values:
+            - "/*"
+      ListenerArn: !Ref Listener
+      Priority: 1
+      RuleArn: !Sub "${EnvironmentName}-ListenerRule"
+      TargetGroupArn: !Ref TargetGroup
+
+  LaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      InstanceType: t2.micro
+      ImageId: <your_ami_id>  # Replace with your custom AMI ID
+      SecurityGroups:
+        - !GetAtt SecurityGroup.GroupId
+      KeyName: <your_key_pair>  # Replace with your key pair
+      UserData: !Base64 |
+        #!/bin/bash
+        # Custom initialization script for your instance
+        # ...
+      InstanceMonitoring: 'true'
+      IamInstanceProfile: <your_iam_instance_profile>  # Replace with your IAM role
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+        - Fn::Select: 
+            - '0'
+            - Fn::GetAZs: !Ref 'AWS::Region'
+      DesiredCapacity: 2  # Initial number of instances
+      LaunchConfigurationName: !Ref LaunchConfiguration
+      MaxSize: 5  # Maximum number of instances
+      MinSize: 2  # Minimum number of instances
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      VPCZoneIdentifier:
+        - !Ref Subnet
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-ASG"
+          PropagateAtLaunch: 'true'
