@@ -1,103 +1,158 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Production Environment for Java Microservice
+Description: Ambiente microservizi API
 
 Parameters:
-  EnvironmentName:
-    Type: String
-    Description: Name of the environment (e.g., production)
+  KeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: Coppia key EC2
 
 Resources:
-  # VPC, Internet Gateway, Subnet, Route Table, Security Group, WAF, MySQLDB, REST API, etc. (similar to previous scripts)
-
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  VPC:
+    Type: 'AWS::EC2::VPC'
     Properties:
-      Name: !Sub "${EnvironmentName}-ALB"
-      Subnets:
-        - !Ref Subnet
-      SecurityGroups:
-        - !GetAtt SecurityGroup.GroupId
-      Scheme: internet-facing
-      LoadBalancerAttributes:
-        - Key: idle_timeout.timeout_seconds
-          Value: '60'
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: !Sub "${EnvironmentName}-TargetGroup"
-      Port: 80
-      Protocol: HTTP
-      VpcId: !Ref VPC
-      HealthCheckIntervalSeconds: 30
-      HealthCheckPath: /
-      HealthCheckProtocol: HTTP
-      HealthCheckTimeoutSeconds: 10
-      HealthyThresholdCount: 2
-      UnhealthyThresholdCount: 2
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      DefaultActions:
-        - Type: fixed-response
-          FixedResponseConfig:
-            StatusCode: 200
-            ContentType: text/plain
-            Content: "OK"
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-
-  ListenerRule:
-    Type: AWS::ElasticLoadBalancingV2::ListenerRule
-    Properties:
-      Actions:
-        - Type: fixed-response
-          FixedResponseConfig:
-            StatusCode: 200
-            ContentType: text/plain
-            Content: "OK"
-      Conditions:
-        - Field: path-pattern
-          Values:
-            - "/*"
-      ListenerArn: !Ref Listener
-      Priority: 1
-      RuleArn: !Sub "${EnvironmentName}-ListenerRule"
-      TargetGroupArn: !Ref TargetGroup
-
-  LaunchConfiguration:
-    Type: AWS::AutoScaling::LaunchConfiguration
-    Properties:
-      InstanceType: t2.micro
-      ImageId: <your_ami_id>  # Replace with your custom AMI ID
-      SecurityGroups:
-        - !GetAtt SecurityGroup.GroupId
-      KeyName: <your_key_pair>  # Replace with your key pair
-      UserData: !Base64 |
-        #!/bin/bash
-        # Custom initialization script for your instance
-        # ...
-      InstanceMonitoring: 'true'
-      IamInstanceProfile: <your_iam_instance_profile>  # Replace with your IAM role
-
-  AutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      AvailabilityZones:
-        - Fn::Select: 
-            - '0'
-            - Fn::GetAZs: !Ref 'AWS::Region'
-      DesiredCapacity: 2  # Initial number of instances
-      LaunchConfigurationName: !Ref LaunchConfiguration
-      MaxSize: 5  # Maximum number of instances
-      MinSize: 2  # Minimum number of instances
-      TargetGroupARNs:
-        - !Ref TargetGroup
-      VPCZoneIdentifier:
-        - !Ref Subnet
+      CidrBlock: '10.0.0.0/16'
       Tags:
         - Key: Name
-          Value: !Sub "${EnvironmentName}-ASG"
+          Value: ProductionVPC
+
+  Subnet:
+    Type: 'AWS::EC2::Subnet'
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.0.0/24'
+      AvailabilityZone: !Select [0, !GetAZs !Ref 'AWS::Region']
+      Tags:
+        - Key: Name
+          Value: SubnetProd
+
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGWProd
+
+  AttachGateway:
+    Type: 'AWS::EC2::VPCGatewayAttachment'
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  SecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable all traffic
+      VpcId: !Ref VPC
+
+  ApiServerLaunchConfiguration:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: 'ami-12345678' # AMI fittizia
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref SecurityGroup
+      UserData:
+        Fn::Base64: 
+          !Sub |
+            #!/bin/bash
+            yum install -y java-1.8.0
+            # ulteriori comandi setup microservizio
+
+  ApiServerAutoScalingGroup:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    Properties:
+      VPCZoneIdentifier: 
+        - !Ref Subnet
+      LaunchConfigurationName: !Ref ApiServerLaunchConfiguration
+      MinSize: 2
+      MaxSize: 5
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !ImportValue 'YourTargetGroupARN' # aggiungere valore gruppo ARN
+      Tags:
+        - Key: Name
+          Value: ApiServer
           PropagateAtLaunch: 'true'
+
+  Database:
+    Type: 'AWS::RDS::DBInstance'
+    Properties:
+      DBInstanceIdentifier: DBProd
+      Engine: mysql
+      EngineVersion: '5.7'
+      AllocatedStorage: '20'
+      DBInstanceClass: db.t2.micro
+      MasterUsername: admin
+      MasterUserPassword: admin123
+      VPCSecurityGroups:
+        - !GetAtt SecurityGroup.GroupId
+      AvailabilityZone: !Select [0, !GetAZs !Ref 'AWS::Region']
+      MultiAZ: 'false'
+      PubliclyAccessible: 'false'
+      StorageType: gp2
+      Tags:
+        - Key: Name
+          Value: DBProd
+
+  WebACL:
+    Type: 'AWS::WAFv2::WebACL'
+    Properties:
+      DefaultAction:
+        Allow: {}
+      Scope: REGIONAL
+      Description: WAF Produzione
+      Name: ProductionWAF
+      Rules:
+        - Action:
+            Allow: {}
+          Name: AllowAll
+          Priority: 0
+          Statement:
+            ManagedRuleGroupStatement:
+              Name: AWSManagedRulesCommonRuleSet
+              VendorName: AWS
+
+  CodePipeline:
+    Type: 'AWS::CodePipeline::Pipeline'
+    Properties:
+      Name: ProductionCodePipeline
+      RoleArn: arn:aws:iam::123456789012:role/service-role/CodePipelineServiceRole # service role idoneo per Pipeline
+      ArtifactStore:
+        Location: !Sub 'codepipeline-${AWS::Region}-123456789012'
+        Type: S3
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: SourceAction
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeCommit
+                Version: '1'
+              Configuration:
+                RepositoryName: repositoryname
+                BranchName: branchname
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Deploy
+          Actions:
+            - Name: DeployAction
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: '1'
+              Configuration:
+                StackName: Prodstack
+                ActionMode: REPLACE_ON_FAILURE
+                Capabilities: CAPABILITY_IAM
+                RoleArn: arn:aws:iam::123456789012:role/service-role/CodePipelineServiceRole # ruolo IAM apposito
+                TemplatePath: SourceOutput::template.yaml
+              InputArtifacts:
+                - Name: SourceOutput
+
+Outputs:
+  ApiServerURL:
+    Description: URL of the API Server
+    Value: !GetAtt [ApiServerAutoScalingGroup, Instances, 0, PublicDnsName]
